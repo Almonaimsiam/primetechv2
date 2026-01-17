@@ -4,6 +4,12 @@ import { Row, Col, ListGroup, Image, Card, Button } from 'react-bootstrap';
 import { PayPalButtons, usePayPalScriptReducer } from '@paypal/react-paypal-js';
 import { useSelector } from 'react-redux';
 import { toast } from 'react-toastify';
+
+// Stripe Imports
+import { Elements } from '@stripe/react-stripe-js';
+import { loadStripe } from '@stripe/stripe-js';
+import CheckoutForm from '../components/CheckoutForm';
+
 import Message from '../components/Message';
 import Loader from '../components/Loader';
 import {
@@ -12,6 +18,9 @@ import {
   useGetPaypalClientIdQuery,
   usePayOrderMutation,
 } from '../slices/ordersApiSlice';
+
+// REPLACE THIS with your actual Stripe Publishable Key
+const stripePromise = loadStripe('pk_test_51SqSeVAroU0SUNlx0yo4uctIgLfwEDbyz4B11YiAOBvMF4mM0w5RRnpaUBGTEWHw5232D8exKZcoGuKAxxFXQtft00I1uhzEJV'); 
 
 const OrderScreen = () => {
   const { id: orderId } = useParams();
@@ -57,12 +66,32 @@ const OrderScreen = () => {
     }
   }, [errorPayPal, loadingPayPal, order, paypal, paypalDispatch]);
 
+  // Handler for Successful Stripe Payment
+  const successPaymentHandler = async (paymentResult) => {
+    try {
+      await payOrder({ 
+        orderId, 
+        details: { 
+            id: paymentResult.id, 
+            status: paymentResult.status, 
+            update_time: paymentResult.created, 
+            email_address: userInfo.email 
+        } 
+      }).unwrap();
+      
+      refetch();
+      toast.success('Order paid successfully with Card');
+    } catch (err) {
+      toast.error(err?.data?.message || err.error);
+    }
+  };
+
   function onApprove(data, actions) {
     return actions.order.capture().then(async function (details) {
       try {
         await payOrder({ orderId, details });
         refetch();
-        toast.success('Order is paid');
+        toast.success('Order is paid with PayPal');
       } catch (err) {
         toast.error(err?.data?.message || err.error);
       }
@@ -104,23 +133,16 @@ const OrderScreen = () => {
           <ListGroup variant="flush">
             <ListGroup.Item>
               <h2>Shipping</h2>
+              <p><strong>Name: </strong> {order.user.name}</p>
+              <p><strong>Email: </strong> <a href={`mailto:${order.user.email}`}>{order.user.email}</a></p>
               <p>
-                <strong>Name: </strong> {order.user.name}
-              </p>
-              <p>
-                <strong>Email: </strong>{' '}
-                <a href={`mailto:${order.user.email}`}>{order.user.email}</a>
-              </p>
-              <p>
-                <strong>Address:</strong>
+                <strong>Address: </strong>
                 {order.shippingAddress.address}, {order.shippingAddress.city}{' '}
                 {order.shippingAddress.postalCode},{' '}
                 {order.shippingAddress.country}
               </p>
               {order.isDelivered ? (
-                <Message variant="success">
-                  Delivered on {order.deliveredAt}
-                </Message>
+                <Message variant="success">Delivered on {order.deliveredAt}</Message>
               ) : (
                 <Message variant="danger">Not Delivered</Message>
               )}
@@ -128,10 +150,7 @@ const OrderScreen = () => {
 
             <ListGroup.Item>
               <h2>Payment Method</h2>
-              <p>
-                <strong>Method: </strong>
-                {order.paymentMethod}
-              </p>
+              <p><strong>Method: </strong> {order.paymentMethod}</p>
               {order.isPaid ? (
                 <Message variant="success">Paid on {order.paidAt}</Message>
               ) : (
@@ -149,17 +168,10 @@ const OrderScreen = () => {
                     <ListGroup.Item key={index}>
                       <Row>
                         <Col md={1}>
-                          <Image
-                            src={item.image}
-                            alt={item.name}
-                            fluid
-                            rounded
-                          />
+                          <Image src={item.image} alt={item.name} fluid rounded />
                         </Col>
                         <Col>
-                          <Link to={`/product/${item.product}`}>
-                            {item.name}
-                          </Link>
+                          <Link to={`/product/${item.product}`}>{item.name}</Link>
                         </Col>
                         <Col md={4}>
                           {item.qty} x ${item.price} = ${item.qty * item.price}
@@ -172,6 +184,7 @@ const OrderScreen = () => {
             </ListGroup.Item>
           </ListGroup>
         </Col>
+        
         <Col md={4}>
           <Card>
             <ListGroup variant="flush">
@@ -179,63 +192,54 @@ const OrderScreen = () => {
                 <h2>Order Summary</h2>
               </ListGroup.Item>
               <ListGroup.Item>
-                <Row>
-                  <Col>Items</Col>
-                  <Col>${order.itemsPrice}</Col>
-                </Row>
+                <Row><Col>Items</Col><Col>${order.itemsPrice}</Col></Row>
               </ListGroup.Item>
               <ListGroup.Item>
-                <Row>
-                  <Col>Shipping</Col>
-                  <Col>${order.shippingPrice}</Col>
-                </Row>
+                <Row><Col>Shipping</Col><Col>${order.shippingPrice}</Col></Row>
               </ListGroup.Item>
               <ListGroup.Item>
-                <Row>
-                  <Col>Tax</Col>
-                  <Col>${order.taxPrice}</Col>
-                </Row>
+                <Row><Col>Tax</Col><Col>${order.taxPrice}</Col></Row>
               </ListGroup.Item>
               <ListGroup.Item>
-                <Row>
-                  <Col>Total</Col>
-                  <Col>${order.totalPrice}</Col>
-                </Row>
+                <Row><Col>Total</Col><Col>${order.totalPrice}</Col></Row>
               </ListGroup.Item>
+
               {!order.isPaid && (
                 <ListGroup.Item>
                   {loadingPay && <Loader />}
+                  
+                  <div className='mb-4'>
+                    <h4 className='mb-3'>Pay with Credit Card</h4>
+                    <Elements stripe={stripePromise}>
+                      <CheckoutForm 
+                        amount={order.totalPrice} 
+                        onSuccess={successPaymentHandler} 
+                      />
+                    </Elements>
+                  </div>
 
-                  {isPending ? (
-                    <Loader />
-                  ) : (
-                    <div>
-                      <PayPalButtons
-                        createOrder={createOrder}
-                        onApprove={onApprove}
-                        onError={onError}
-                      ></PayPalButtons>
-                    </div>
+                  <hr />
+
+                  <h4 className='mb-3'>Pay with PayPal</h4>
+                  {isPending ? <Loader /> : (
+                    <PayPalButtons
+                      createOrder={createOrder}
+                      onApprove={onApprove}
+                      onError={onError}
+                    />
                   )}
                 </ListGroup.Item>
               )}
 
               {loadingDeliver && <Loader />}
 
-              {userInfo &&
-                userInfo.isAdmin &&
-                order.isPaid &&
-                !order.isDelivered && (
-                  <ListGroup.Item>
-                    <Button
-                      type="button"
-                      className="btn btn-block"
-                      onClick={deliverOrderHandler}
-                    >
-                      Mark As Delivered
-                    </Button>
-                  </ListGroup.Item>
-                )}
+              {userInfo && userInfo.isAdmin && order.isPaid && !order.isDelivered && (
+                <ListGroup.Item>
+                  <Button type="button" className="btn btn-block" onClick={deliverOrderHandler}>
+                    Mark As Delivered
+                  </Button>
+                </ListGroup.Item>
+              )}
             </ListGroup>
           </Card>
         </Col>

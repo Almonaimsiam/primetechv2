@@ -14,17 +14,10 @@ const addOrderItems = asyncHandler(async (req, res) => {
     res.status(400);
     throw new Error('No order items');
   } else {
-    // NOTE: here we must assume that the prices from our client are incorrect.
-    // We must only trust the price of the item as it exists in
-    // our DB. This prevents a user paying whatever they want by hacking our client
-    // side code - https://gist.github.com/bushblade/725780e6043eaf59415fbaf6ca7376ff
-
-    // get the ordered items from our database
     const itemsFromDB = await Product.find({
       _id: { $in: orderItems.map((x) => x._id) },
     });
 
-    // map over the order items and use the price from our items from database
     const dbOrderItems = orderItems.map((itemFromClient) => {
       const matchingItemFromDB = itemsFromDB.find(
         (itemFromDB) => itemFromDB._id.toString() === itemFromClient._id
@@ -37,7 +30,6 @@ const addOrderItems = asyncHandler(async (req, res) => {
       };
     });
 
-    // calculate prices
     const { itemsPrice, taxPrice, shippingPrice, totalPrice } =
       calcPrices(dbOrderItems);
 
@@ -59,16 +51,12 @@ const addOrderItems = asyncHandler(async (req, res) => {
 });
 
 // @desc    Get logged in user orders
-// @route   GET /api/orders/myorders
-// @access  Private
 const getMyOrders = asyncHandler(async (req, res) => {
   const orders = await Order.find({ user: req.user._id });
   res.json(orders);
 });
 
 // @desc    Get order by ID
-// @route   GET /api/orders/:id
-// @access  Private
 const getOrderById = asyncHandler(async (req, res) => {
   const order = await Order.findById(req.params.id).populate(
     'user',
@@ -87,33 +75,42 @@ const getOrderById = asyncHandler(async (req, res) => {
 // @route   PUT /api/orders/:id/pay
 // @access  Private
 const updateOrderToPaid = asyncHandler(async (req, res) => {
-  // NOTE: here we need to verify the payment was made to PayPal before marking
-  // the order as paid
-  const { verified, value } = await verifyPayPalPayment(req.body.id);
-  if (!verified) throw new Error('Payment not verified');
-
-  // check if this transaction has been used before
-  const isNewTransaction = await checkIfNewTransaction(Order, req.body.id);
-  if (!isNewTransaction) throw new Error('Transaction has been used before');
-
   const order = await Order.findById(req.params.id);
 
   if (order) {
-    // check the correct amount was paid
-    const paidCorrectAmount = order.totalPrice.toString() === value;
-    if (!paidCorrectAmount) throw new Error('Incorrect amount paid');
+    // Check if it's a Stripe payment (status: 'succeeded')
+    if (req.body.status === 'succeeded') {
+        order.isPaid = true;
+        order.paidAt = Date.now();
+        order.paymentResult = {
+          id: req.body.id,
+          status: req.body.status,
+          update_time: req.body.update_time || Date.now(),
+          email_address: req.body.email_address || req.user.email,
+        };
+    } 
+    // Otherwise, handle as PayPal payment
+    else {
+        const { verified, value } = await verifyPayPalPayment(req.body.id);
+        if (!verified) throw new Error('Payment not verified');
 
-    order.isPaid = true;
-    order.paidAt = Date.now();
-    order.paymentResult = {
-      id: req.body.id,
-      status: req.body.status,
-      update_time: req.body.update_time,
-      email_address: req.body.payer.email_address,
-    };
+        const isNewTransaction = await checkIfNewTransaction(Order, req.body.id);
+        if (!isNewTransaction) throw new Error('Transaction has been used before');
+
+        const paidCorrectAmount = order.totalPrice.toString() === value;
+        if (!paidCorrectAmount) throw new Error('Incorrect amount paid');
+
+        order.isPaid = true;
+        order.paidAt = Date.now();
+        order.paymentResult = {
+          id: req.body.id,
+          status: req.body.status,
+          update_time: req.body.update_time,
+          email_address: req.body.payer ? req.body.payer.email_address : req.body.email_address,
+        };
+    }
 
     const updatedOrder = await order.save();
-
     res.json(updatedOrder);
   } else {
     res.status(404);
@@ -122,17 +119,13 @@ const updateOrderToPaid = asyncHandler(async (req, res) => {
 });
 
 // @desc    Update order to delivered
-// @route   GET /api/orders/:id/deliver
-// @access  Private/Admin
 const updateOrderToDelivered = asyncHandler(async (req, res) => {
   const order = await Order.findById(req.params.id);
 
   if (order) {
     order.isDelivered = true;
     order.deliveredAt = Date.now();
-
     const updatedOrder = await order.save();
-
     res.json(updatedOrder);
   } else {
     res.status(404);
@@ -141,8 +134,6 @@ const updateOrderToDelivered = asyncHandler(async (req, res) => {
 });
 
 // @desc    Get all orders
-// @route   GET /api/orders
-// @access  Private/Admin
 const getOrders = asyncHandler(async (req, res) => {
   const orders = await Order.find({}).populate('user', 'id name');
   res.json(orders);
